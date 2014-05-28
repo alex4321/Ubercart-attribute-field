@@ -1,0 +1,8 @@
+.field-type-attributes-field.field-widget-attributes-field-widget-default .form-type-textfield {
+  display: inline-block;
+  width: 49%;
+  vertical-align: top;
+}
+.field-type-attributes-field.field-widget-attributes-field-widget-default .form-type-textfield input {
+  width: 100%;
+}

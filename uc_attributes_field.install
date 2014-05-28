@@ -1,0 +1,15 @@
+<?php
+
+/**
+ * Implements hook_schema().
+ */
+function uc_attributes_field_field_schema($field) {
+  return array(
+    'columns' => array(
+      'attribute_id' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+      )
+    )
+  );
+}

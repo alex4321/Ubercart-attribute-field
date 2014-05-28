@@ -1,0 +1,252 @@
+<?php
+
+/**
+ * Implements hook_field_info().
+ */
+function uc_attributes_field_field_info() {
+  return array(
+    'attributes_field' => array(
+      'label' => t('Attributes'),
+      'description' => t('Ubercart attributes'),
+      'default_widget' => 'attributes_field_widget_default',
+      'default_formatter' => 'attributes_field_default_formatter',
+      'instance_settings' => array(
+        'attribute' => t('Attribute')
+      )
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_instance_settings_form().
+ */
+function uc_attributes_field_field_instance_settings_form($field, $instance) {
+  $query = db_query('SELECT aid, name FROM {uc_attributes}');
+  $options = array();
+  while(($item = $query->fetchObject()) != NULL) {
+    $options[$item->aid] = $item->name;
+  }
+
+  $settings = $instance['settings'];
+  $form['attribute'] = array(
+    '#type' => 'select',
+    '#title' => t('Use attribute'),
+    '#options' => $options,
+    '#default_value' => check_plain($settings['attribute']),
+    '#required' => TRUE
+  );
+
+  return $form;
+}
+
+
+/**
+ * Implements hook_field_widget_info().
+ */
+function uc_attributes_field_field_widget_info() {
+  return array(
+    'attributes_field_widget_default' => array(
+      'label' => t('Default'),
+      'field types' => array('attributes_field'),
+    )
+  );
+}
+
+
+/**
+ * Implements hook_field_field_widget_form().
+ */
+function uc_attributes_field_field_widget_form(&$form, &$form_state, $field, $instance, $langcode, $items, $delta, $element) {
+  $oid = @$items[$delta]['attribute_id'];
+  if($oid && is_numeric($oid)) {
+    $option = uc_attribute_option_load($oid);
+  }
+  else {
+    $option = NULL;
+  }
+
+  $container = array(
+    'name' => array(
+      '#type' => 'textfield',
+      '#title' => t('Name'),
+      '#default_value' => $option ? $option->name : ""
+    ),
+    'price' => array(
+      '#type' => 'textfield',
+      '#title' => t('Price'),
+      '#default_value' => $option ? $option->price : ""
+    )
+  );
+
+  if(module_exists('html5input')) {
+    $container['price']['#type'] = 'number';
+    $container['#html5'] = TRUE;
+    html5input_form_alter($container);
+  }
+
+  $element += $container;
+  $element['#attached']['css'][] = drupal_get_path('module', 'uc_attributes_field') . '/css/input.css';
+
+  return $element;
+}
+
+/**
+ * Implements hook_field_attach_form().
+ */
+function uc_attributes_field_field_attach_form($entity_type, $entity, &$form, &$form_state, $langcode) {
+  foreach(element_children($form) as $field_name) {
+    $field_info = field_info_field($field_name);
+    if ($field_info && $field_info['type']=='attributes_field') {
+      if ('field_collection_item' == $entity_type) {
+        $bundle_name = $entity->field_name;
+      }
+      else {
+        $bundle_name = $entity->type;
+      }
+
+      $instance = field_info_instance($entity_type, $field_name, $bundle_name);
+
+      $lang = $form[$field_name]['#language'];
+      $form[$field_name][$lang]['#instance_settings'] = $instance['settings'];
+    }
+  }
+}
+
+function __uc_attribute_create_option__($aid, $fields) {
+  $fields['aid'] = $aid;
+  $query = db_select('uc_attribute_options', 'attrs')->fields('attrs', array('oid'))
+    ->condition('aid', $aid, '=')->condition('name', $fields['name'], '=')->execute();
+  $exists = ($item = $query->fetchObject() ) != NULL;
+
+  if($exists) {
+    db_update("uc_attribute_options")->fields($fields)->condition('oid', $item->oid, '=')->execute();
+    return $item->oid;
+  }
+  else {
+    db_insert("uc_attribute_options")->fields($fields)->execute();
+    $query = db_select('uc_attribute_options', 'attrs')->fields('attrs', array('oid'))
+      ->condition('aid', $aid, '=')->condition('name', $fields['name'], '=')->execute();
+    $item = $query->fetchObject();
+    return $item->oid;
+  }
+}
+
+function __uc_attach_attribute__($nid, $aid, $default, $display=1) {
+  $query = db_select('uc_product_attributes', 'attrs')->fields('attrs', array('nid', 'aid'))
+    ->condition('nid', $nid, '=')->condition('aid', $aid, '=')->execute();
+  $exist = $query->fetchObject()!=NULL;
+  if(!$exist) {
+    db_insert('uc_product_attributes')->fields(array(
+      'nid' => $nid,
+      'aid' => $aid,
+      'display'=>$display,
+      'default_option'=>$default
+    ))->execute();
+  }
+}
+
+function __uc_attach_options__($nid, $oids) {
+  db_delete('uc_product_options')->condition('nid', $nid, '=')->execute();
+  $fields = array('oid', 'cost', 'price', 'weight', 'ordering');
+  $insert_query = db_insert('uc_product_options')->fields(array_merge(array('nid'),$fields));
+  $select_query = db_select('uc_attribute_options', 'source')->condition('oid', $oids, 'in')->fields('source',$fields)->execute();
+  while(($item=$select_query->fetchObject())!=NULL) {
+    $arr = (array)$item;
+    $arr['nid'] = $nid;
+    $insert_query->values($arr);
+  }
+  $insert_query->execute();
+}
+
+/**
+ * Implements hook_field_presave().
+ */
+function uc_attributes_field_field_presave($entity_type, $entity, $field, $instance, $langcode, &$items) {
+  $settings = $instance['settings'];
+  $result_items = array();
+  $oids = array(
+    __uc_attribute_create_option__($settings['attribute'], array(
+      'name' => t('Nothing'),
+      'price' => 0
+    ))
+  );
+  foreach($items as $delta=>&$item) {
+    if(!$item['price']) {
+      continue;
+    }
+    $oid = __uc_attribute_create_option__($settings['attribute'], array(
+      'name' => $item['name'],
+      'price' => $item['price']
+    ));
+    $item['attribute_id'] = $oid;
+    $oids[] = $oid;
+    $result_items[$delta] = $item;
+  }
+  $items = $result_items;
+
+  //TODO: Maybe exists better method to append attribute to new nodes?
+  $GLOBALS['__uc_append_attribute__'] = $settings['attribute'];
+  $GLOBALS['__uc_options_id__'] = $oids;
+}
+
+function __uc_append_attribute__($node) {
+  if(isset($GLOBALS['__uc_append_attribute__']) && isset($GLOBALS['__uc_options_id__'])) {
+    __uc_attach_attribute__($node->nid, $GLOBALS['__uc_append_attribute__'], $GLOBALS['__uc_options_id__'][0]);
+    __uc_attach_options__($node->nid, $GLOBALS['__uc_options_id__']);
+  }
+}
+
+
+
+/**
+ * Implements hook_node_insert().
+ */
+function uc_attributes_field_node_insert($node) {
+  if(isset($GLOBALS['__uc_append_attribute__']) && isset($GLOBALS['__uc_options_id__'])) {
+    __uc_attach_attribute__($node->nid, $GLOBALS['__uc_append_attribute__'], $GLOBALS['__uc_options_id__'][0]);
+    __uc_attach_options__($node->nid, $GLOBALS['__uc_options_id__']);
+  }
+}
+
+/**
+ * Implements hook_node_update().
+ */
+function uc_attributes_field_node_update($node) {
+  if(isset($GLOBALS['__uc_append_attribute__']) && isset($GLOBALS['__uc_options_id__'])) {
+    __uc_attach_attribute__($node->nid, $GLOBALS['__uc_append_attribute__'], $GLOBALS['__uc_options_id__'][0]);
+    __uc_attach_options__($node->nid, $GLOBALS['__uc_options_id__']);
+  }
+}
+
+/**
+ * Implements hook_widget_error().
+ */
+function uc_attributes_field_widget_error($element, $error, $form, &$form_state) {
+}
+
+/**
+ * Implements hook_field_formatter_info().
+ */
+function uc_attributes_field_field_formatter_info() {
+  return array(
+    'attributes_field_default_formatter' => array(
+      'label' => t('Default'),
+      'field types' => array('attributes_field'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_view().
+ */
+function uc_attributes_field_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+
+}
+
+
+/**
+ * Implements hook_field_field_is_empty().
+ */
+function uc_attributes_field_field_is_empty($item, $field) {
+
+}

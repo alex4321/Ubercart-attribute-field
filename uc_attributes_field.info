@@ -1,0 +1,4 @@
+name = Ubercart attributes field
+core = 7.x
+description = "Add field for adding attributes to node form"
+package = "Ubercart - extra"
