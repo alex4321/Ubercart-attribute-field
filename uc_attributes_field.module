@@ -17,6 +17,21 @@ function uc_attributes_field_field_info() {
   );
 }
 
+function __uc_option_stock__($nid, $oid, $aid) {
+  $combination = "a:$aid:{i:1;s:2:\"$oid\";}";
+  $query = db_query("SELECT {uc_product_stock}.stock AS stock " .
+    "FROM {uc_product_stock} INNER JOIN {uc_product_adjustments} ON {uc_product_adjustments}.model={uc_product_stock}.sku ".
+    "WHERE uc_product_adjustments.combination=:combination AND {uc_product_stock}.nid=:nid",
+    array(
+      ":combination" => $combination,
+      ":nid" => $nid
+    )
+  );
+  $item = $query->fetchObject();
+
+  return $item->stock;
+}
+
 /**
  * Implements hook_field_instance_settings_form().
  */
@@ -56,7 +71,11 @@ function uc_attributes_field_field_widget_info() {
 /**
  * Implements hook_field_field_widget_form().
  */
+/*
+ * Render widget for node forms.
+ */
 function uc_attributes_field_field_widget_form(&$form, &$form_state, $field, $instance, $langcode, $items, $delta, $element) {
+  //Load attribute option
   $oid = @$items[$delta]['attribute_id'];
   if($oid && is_numeric($oid)) {
     $option = uc_attribute_option_load($oid);
@@ -77,9 +96,32 @@ function uc_attributes_field_field_widget_form(&$form, &$form_state, $field, $in
       '#default_value' => $option ? $option->price : ""
     )
   );
+  if(module_exists('uc_stock')) {
+    $attribute = $instance['settings']['attribute'];
+    if(isset($form['nid']) && isset($form['nid']['#value']) && $oid && is_numeric($oid)) {
+      $stock_count = __uc_option_stock__($form['nid']['#value'], $oid, $attribute);
+    }
+    else {
+      $stock_count = "";
+    }
 
+    $container['stock'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Stock'),
+      '#default_value' => $stock_count
+    );
+  }
+
+  /*
+   * Check for my module with html5 input types
+   */
   if(module_exists('html5input')) {
     $container['price']['#type'] = 'number';
+    $container['price']['#attributes']['min'] = 0;
+    if(module_exists('uc_stock')) {
+      $container['stock']['#type'] = 'number';
+      $container['stock']['#attributes']['min'] = 0;
+    }
     $container['#html5'] = TRUE;
     html5input_form_alter($container);
   }
@@ -112,6 +154,10 @@ function uc_attributes_field_field_attach_form($entity_type, $entity, &$form, &$
   }
 }
 
+/*
+ * Append option with field $fields to attribute (if not exists with same $fields['name)
+ * or update existing.
+ */
 function __uc_attribute_create_option__($aid, $fields) {
   $fields['aid'] = $aid;
   $query = db_select('uc_attribute_options', 'attrs')->fields('attrs', array('oid'))
@@ -131,6 +177,10 @@ function __uc_attribute_create_option__($aid, $fields) {
   }
 }
 
+/*
+ * Append attribute $aid to product node $nid (with default option $default and
+ * $display display (0 - textbox, 1 - select, 2 - radiobuttons, 3 - checkboxes)
+ */
 function __uc_attach_attribute__($nid, $aid, $default, $display=1) {
   $query = db_select('uc_product_attributes', 'attrs')->fields('attrs', array('nid', 'aid'))
     ->condition('nid', $nid, '=')->condition('aid', $aid, '=')->execute();
@@ -145,8 +195,35 @@ function __uc_attach_attribute__($nid, $aid, $default, $display=1) {
   }
 }
 
+/*
+ * Append sku for option
+ */
+function __uc_attach_options_sku__($nid, $aid, $oids, $base_model) {
+  db_delete('uc_product_adjustments')->condition('nid', $nid, '=')->execute();
+
+  $insert_query = db_insert('uc_product_adjustments')->fields(array('nid', 'combination', 'model'));
+  $models = array();
+  foreach($oids as $oid) {
+    $model = "$base_model - $oid";
+    $models[$oid] = $model;
+    $combination = "a:$aid:{i:1;s:2:\"$oid\";}";
+    $insert_query->values(array(
+      $nid,
+      $combination,
+      $model
+    ));
+  }
+  $insert_query->execute();
+
+  return $models;
+}
+
+/*
+ * Attach $oids options to $nid product node
+ */
 function __uc_attach_options__($nid, $oids) {
   db_delete('uc_product_options')->condition('nid', $nid, '=')->execute();
+
   $fields = array('oid', 'cost', 'price', 'weight', 'ordering');
   $insert_query = db_insert('uc_product_options')->fields(array_merge(array('nid'),$fields));
   $select_query = db_select('uc_attribute_options', 'source')->condition('oid', $oids, 'in')->fields('source',$fields)->execute();
@@ -158,6 +235,17 @@ function __uc_attach_options__($nid, $oids) {
   $insert_query->execute();
 }
 
+function __uc_stock_count__($nid, $sku) {
+  $query = db_select('uc_product_stock')->condition('sku', $sku, '=')->condition('nid', $nid, '=')->execute();
+  $item = $query->fetchObject();
+  if($item) {
+    return $item->stock;
+  }
+  else {
+    return 0;
+  }
+}
+
 /**
  * Implements hook_field_presave().
  */
@@ -165,11 +253,12 @@ function uc_attributes_field_field_presave($entity_type, $entity, $field, $insta
   $settings = $instance['settings'];
   $result_items = array();
   $oids = array(
-    __uc_attribute_create_option__($settings['attribute'], array(
+    $nothing_oid = __uc_attribute_create_option__($settings['attribute'], array(
       'name' => t('Nothing'),
       'price' => 0
     ))
   );
+
   foreach($items as $delta=>&$item) {
     if(!$item['price']) {
       continue;
@@ -178,6 +267,10 @@ function uc_attributes_field_field_presave($entity_type, $entity, $field, $insta
       'name' => $item['name'],
       'price' => $item['price']
     ));
+    if(isset($item['stock'])) {
+      $stocks[$oid] = $item['stock'];
+    }
+
     $item['attribute_id'] = $oid;
     $oids[] = $oid;
     $result_items[$delta] = $item;
@@ -187,35 +280,62 @@ function uc_attributes_field_field_presave($entity_type, $entity, $field, $insta
   //TODO: Maybe exists better method to append attribute to new nodes?
   $GLOBALS['__uc_append_attribute__'] = $settings['attribute'];
   $GLOBALS['__uc_options_id__'] = $oids;
+  $GLOBALS['__uc_stocks__'] = $stocks;
+}
+
+function __uc_append_stock__($nid, $model, $stock, $threshold=0, $active=1) {
+  $exists = db_select('uc_product_stock','s')->fields('s',array('stock'))
+    ->condition('s.nid', $nid, '=')->condition('s.sku', $model, '=')->execute()->fetchObject()!=NULL;
+  if($exists) {
+    db_update('uc_product_stock')->condition('nid', $nid)->condition('sku', $model, '=')
+      ->fields(array(
+        'sku'=>$stock,
+        'threshold'=>$threshold,
+        'active'=>$active
+      ))->execute();
+  }
+  else {
+    db_insert('uc_product_stock')->fields(array(
+      'nid'=>$nid,
+      'sku'=>$model,
+      'stock'=>$stock,
+      'threshold'=>$threshold,
+      'active'=>$active
+    ))->execute();
+  }
 }
 
 function __uc_append_attribute__($node) {
   if(isset($GLOBALS['__uc_append_attribute__']) && isset($GLOBALS['__uc_options_id__'])) {
-    __uc_attach_attribute__($node->nid, $GLOBALS['__uc_append_attribute__'], $GLOBALS['__uc_options_id__'][0]);
-    __uc_attach_options__($node->nid, $GLOBALS['__uc_options_id__']);
+    $aid = $GLOBALS['__uc_append_attribute__'];
+    $oids = $GLOBALS['__uc_options_id__'];
+    __uc_attach_attribute__($node->nid, $aid, $oids[0]);
+    __uc_attach_options__($node->nid, $oids);
+    $models = __uc_attach_options_sku__($node->nid, $aid, $oids, $node->model);
+    if(module_exists('uc_stock')) {
+      $stock_counts = $GLOBALS['__uc_stocks__'];
+      foreach($oids as $oid) {
+        $model = $models[$oid];
+        if(isset($stock_counts[$oid]) && $stock_counts[$oid]) {
+          __uc_append_stock__($node->nid, $model, $stock_counts[$oid]);
+        }
+      }
+    }
   }
 }
-
-
 
 /**
  * Implements hook_node_insert().
  */
 function uc_attributes_field_node_insert($node) {
-  if(isset($GLOBALS['__uc_append_attribute__']) && isset($GLOBALS['__uc_options_id__'])) {
-    __uc_attach_attribute__($node->nid, $GLOBALS['__uc_append_attribute__'], $GLOBALS['__uc_options_id__'][0]);
-    __uc_attach_options__($node->nid, $GLOBALS['__uc_options_id__']);
-  }
+  __uc_append_attribute__($node);
 }
 
 /**
  * Implements hook_node_update().
  */
 function uc_attributes_field_node_update($node) {
-  if(isset($GLOBALS['__uc_append_attribute__']) && isset($GLOBALS['__uc_options_id__'])) {
-    __uc_attach_attribute__($node->nid, $GLOBALS['__uc_append_attribute__'], $GLOBALS['__uc_options_id__'][0]);
-    __uc_attach_options__($node->nid, $GLOBALS['__uc_options_id__']);
-  }
+  __uc_append_attribute__($node);
 }
 
 /**
