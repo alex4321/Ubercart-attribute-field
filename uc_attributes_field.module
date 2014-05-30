@@ -11,7 +11,10 @@ function uc_attributes_field_field_info() {
       'default_widget' => 'attributes_field_widget_default',
       'default_formatter' => 'attributes_field_default_formatter',
       'instance_settings' => array(
-        'attribute' => t('Attribute')
+        'attribute' => t('Attribute'),
+        'title_label' => t('Name label'),
+        'price_label' => t('Price label'),
+        'stock_label' => t('Stock label')
       )
     ),
   );
@@ -50,6 +53,23 @@ function uc_attributes_field_field_instance_settings_form($field, $instance) {
     '#default_value' => check_plain($settings['attribute']),
     '#required' => TRUE
   );
+  $form['title_label'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Label for option name'),
+    '#default_value' => check_plain($settings['title_label'])
+  );
+  $form['price_label'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Label for option price'),
+    '#default_value' => check_plain($settings['price_label'])
+  );
+  if(module_exists('uc_stock')) {
+    $form['stock_label'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Label for option stock'),
+      '#default_value' => check_plain($settings['stock_label'])
+    );
+  }
 
   return $form;
 }
@@ -84,20 +104,22 @@ function uc_attributes_field_field_widget_form(&$form, &$form_state, $field, $in
     $option = NULL;
   }
 
+  $settings = $instance['settings'];
+
   $container = array(
     'name' => array(
       '#type' => 'textfield',
-      '#title' => t('Name'),
+      '#title' => $settings['title_label'],
       '#default_value' => $option ? $option->name : ""
     ),
     'price' => array(
       '#type' => 'textfield',
-      '#title' => t('Price'),
+      '#title' => $settings['price_label'],
       '#default_value' => $option ? $option->price : ""
     )
   );
   if(module_exists('uc_stock')) {
-    $attribute = $instance['settings']['attribute'];
+    $attribute = $settings['attribute'];
     if(isset($form['nid']) && isset($form['nid']['#value']) && $oid && is_numeric($oid)) {
       $stock_count = __uc_option_stock__($form['nid']['#value'], $oid, $attribute);
     }
@@ -107,7 +129,7 @@ function uc_attributes_field_field_widget_form(&$form, &$form_state, $field, $in
 
     $container['stock'] = array(
       '#type' => 'textfield',
-      '#title' => t('Stock'),
+      '#title' => $settings['stock_label'],
       '#default_value' => $stock_count
     );
   }
